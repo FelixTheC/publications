@@ -1,111 +1,183 @@
-# What the WASM
-A short introduction to WebAssembly (WASM) and its potential impact on the web development landscape.
+# What the WASM — A Polyglot Deep Dive
+into the ABI, the JS↔WASM boundary, linear memory, shared memory, and the real cost of going polyglot
+
+---
+
 > "If WASM+WASI existed in 2008, we wouldn't have needed to create Docker. That's how important it is."
 >
 > — Solomon Hykes, Co-founder of Docker
 
-## What is WebAssembly (WASM) in a nutshell
-WebAssembly (WASM) is a binary instruction format for a stack-based virtual machine like Assembly. 
-It was originally designed as a portable compilation target for high-level languages like C and C++, 
-but has since expanded to support other languages and platforms, like C#, Rust, Go, Python, and more. 
-The primary goal of WASM is to enable efficient and secure execution of code in web browsers, reducing the need for plugins and improving performance.
-It always had the completion of JavaScript in mind, as it was designed to run alongside JavaScript in the browser, but it has since evolved to become a standalone technology with its own ecosystem and tooling.
+---
 
-## A short history on WebAssembly (WASM)
-- 2015: The Announcement
-  - Mozilla, Google, Microsoft, and Apple announcing a joint collaboration to create a new binary code format for the web.
-- 2017: The MVP Launches
-  - MVP was officially completed
-  - supported in all four major browsers (Firefox, Chrome, Safari, and Edge)
-  - Developers could now compile C, C++, and Rust to run in the browser at near-native speed.
-- 2019: The Great Escape (W3C & WASI)
-  - Official Standard: The W3C declared WebAssembly the fourth official language of the web (joining HTML, CSS, and JavaScript).
-  - WebAssembly System Interface (WASI) was launched
-  - This allows WASM to run outside the browser, directly on servers, edge networks, and IoT devices.
-- 2023–Present: Maturity & The Component Model
-  - Native Garbage Collection (WasmGC): Added support for languages like Kotlin, Java, and Dart to run efficiently without shipping their own massive runtimes
-  - Component Model: Allowed different languages to talk to each other seamlessly in a single WASM application
+### TL;DR
 
-## WASM today
-WASM has become a versatile and powerful technology, with a growing ecosystem of tools, compilers, and runtimes. It is no longer limited to the browser, but can now run on a wide range of platforms, from servers to edge networks and IoT devices. WASM's ability to run multiple languages seamlessly in a single application has opened up new possibilities for developers, enabling them to build more complex and efficient systems. As WASM continues to evolve, it is likely to play an increasingly important role in the future of computing.
+- WASM is not "faster JavaScript". It is a **portable, sandboxed, stack-machine ABI** with its own memory model — every JS↔WASM call crosses a typed boundary that you pay for in copies and marshaling.
+- Going polyglot (Rust + C++ + Go + Python + JS in one tab) is **technically possible today**, but each language pays a different tax: binary size, glue code, GC, or runtime weight.
+- The interesting senior-level questions are **not** "which language?" but: *Who owns the linear memory? When do you copy vs. share? How do you ship threads? How do you debug it in production?*
+- The Component Model + WASI 0.2 are quietly turning WASM from a browser feature into a **language-agnostic ABI for software in general**.
 
-Nowadays, we can see that a lot of heavy Desktop apps are moving into to the web with WASM. 
-Some examples are Figma, AutoCAD, Adobe Photoshop Web, Google Earth, and Google Docs. These applications are now able to run in the browser, providing a more seamless and efficient user experience. WASM's ability to run multiple languages seamlessly in a single application has also made it possible for developers to build more complex and efficient systems, such as the popular game engine Unity, which now supports WASM as a target platform.
+---
 
-Further, it enables also Edge and Serverless computing for example on Cloudflare, Fastly, and AWS which enabling developers to build and deploy applications without worrying about the underlying infrastructure. 
+## Part 1 — The Mental Model You Actually Need
 
-## What is the general WASM compilation and loading Workflow?
-In general, we can say that creating a WASM binary follows these steps.
-1. We have some Source Code from some high-level coding language (Rust, Go, Python, C++, etc...)
-2. Compilation, with wasm-pack or emscripten and a defined target we compile our code base
-3. the output from step 2. it will give us a *.wasm and a *.js file where the *.js file contains our glue between our binary and a JavaScript environment
-4. after we upload our files and make it statically available, the browser can fetch, compile, and instantiate the binary alongside JavaScript within its own runtime 
+### 1.1 What WASM really is
 
-## How can we use WASM?
-As developers we have multiple options to use WASM. Either directly together with plain JavaScript or one of the many frameworks,  
-or we could use QT with QML which enables use to develop for Desktop (any Platform), Android, and Web simultaneously.
-Within QT/QML you can use C++ and Python (official supported), Qt Quick and QML will then create a WASM binary which bypasses the DOM and draws direct to a canvas via WebGL.
+Forget "binary format for the web" — that's the marketing line. Operationally, WASM is:
 
-```QML 
-import QtQuick
-import QtQuicj.Controls
+1. A **stack-based virtual ISA** with four numeric types (`i32`, `i64`, `f32`, `f64`) plus references (`funcref`, `externref`).
+2. A **single linear memory** per instance — a contiguous, resizable `ArrayBuffer` of bytes addressed by `i32` offsets (today; `memory64` is in flight).
+3. A **module** with explicit `imports` and `exports`. Nothing is ambient — every syscall, every DOM call, every `console.log` must be imported by the host.
+4. A **deterministic, capability-based sandbox**. No filesystem, no network, no clock — unless the host hands them in.
 
-ApplicationWindow {
-  width: 400;
-  height: 350;
-  
-  ...
-  
-  MouseArea {
-    id: buttonMouseArea
-    anchors.fill: parent
-    onClicked: {
-      let rawData = "SomeDataFile";
-      let result = backend.computeHeavyHash(rawData);
-      
-      hashDisplay.text = result;
-    }
-  }
-  
-  Text {
-    id: hashDisplay
-    text: ""
-    ...
-  }
-}
+That last point is what makes Hykes's quote land: WASM is a **process model**, not a language runtime.
+
+### 1.2 The five-minute history (skip if familiar)
+
+- **2015** — Mozilla/Google/Microsoft/Apple announce a joint binary format.
+- **2017** — MVP ships in all four major browsers. C/C++/Rust → near-native in the browser.
+- **2019** — W3C standard. [WASI](https://wasi.dev/) launches → WASM escapes the browser.
+- **2022** — [WasmGC](https://github.com/WebAssembly/gc) lands → Kotlin/Java/Dart/Scheme without shipping their own GC.
+- **2024** — [WASI 0.2 + Component Model + WIT](https://component-model.bytecodealliance.org/) → typed, language-agnostic interfaces. This is the real inflection point.
+
+### 1.3 Where it's actually used in production (2025)
+
+- **Browser-side heavy apps:** Figma (C++), Photoshop Web (C++/Emscripten), AutoCAD Web, Google Earth, 1Password (Rust crypto core).
+- **Edge compute:** Cloudflare Workers, Fastly Compute@Edge, Fermyon Spin, wasmCloud — cold starts in **single-digit milliseconds** vs. ~100–500 ms for containers ([Fastly numbers](https://www.fastly.com/blog/how-lucet-spectre)).
+- **Plugin systems:** Envoy filters, Istio, Shopify Functions, Zellij, Lapce.
+- **Databases:** SingleStore, SurrealDB, and ScyllaDB embed WASM as a UDF runtime.
+
+---
+
+## Part 2 — The Boundary Is the Product
+
+Almost every interesting WASM design decision happens at the **boundary between the host (JS, Wasmtime, Envoy) and the guest module**. Understanding it is the difference between "I shipped a 40 MB blob that hangs the tab" and "I shipped a 400 KB module that beats native".
+
+### 2.1 Linear memory in one picture
+
+```
+ ┌────────────────────────────────────────────────────────────┐
+ │  WASM Instance                                             │
+ │                                                            │
+ │   Linear Memory (one big Uint8Array, host-visible)         │
+ │  ┌──────────────────────────────────────────────────────┐  │
+ │  │ stack │ static data │ heap → → → → → → → → → →  ░░░ │  │
+ │  └──────────────────────────────────────────────────────┘  │
+ │     ▲                                                      │
+ │     │  i32 offsets (pointers) — NOT host pointers          │
+ │     │                                                      │
+ │   exports: process(ptr: i32, len: i32) -> i32              │
+ │   imports: env.log(ptr: i32, len: i32)                     │
+ └────────────────────────────────────────────────────────────┘
+            ▲                       ▲
+            │ JS can read/write     │ JS calls exports;
+            │ the same buffer       │ WASM calls imports
+            │ via Module.HEAPU8     │
 ```
 
-```CPP
-// Backend.hpp
-class Backend: public QObject {
-  Q_OBJECT
-  
-public:
-  explizit Backend(QObject* parent = nullptr);
-  Q_INVOKABLE QString computeHeavyHash(const QString& rawData);
-};
+Two rules that drop out of this:
 
-// Backend.cpp
-Backend::Backend(QObject* parent) : QObject(parent) {}
+1. **WASM cannot hold a JS object directly.** It holds an `externref` *handle*, or it holds bytes you copied in. Strings, arrays, DOM nodes — none of them exist inside linear memory unless you serialize them.
+2. **The host can see everything in the guest's memory.** The sandbox protects the host *from* the guest, not the other way around. Secrets in linear memory are visible to any JS in the page.
 
-QString Backend::computeHeavyHash(const QString& rawData) {
-  QByteArray hash = QCrpytographicHash::hash(rawData.toUtf8)
-  return QString(hash.toHex());
-}
+### 2.2 The four ways data crosses the boundary
+
+| Mechanism | Cost | When to use |
+|---|---|---|
+| **Numeric arg/return** (`i32`/`i64`/`f64`) | ~ns, zero-copy | Hot inner loops, handles, lengths |
+| **Copy via `HEAPU8.set(...)`** | O(n) memcpy | Small/medium buffers (< few MB) |
+| **Shared `WebAssembly.Memory({shared: true})`** | Zero-copy, needs COOP/COEP | Threads, workers, large buffers |
+| **`externref` handle table** | ~ns indirection | Passing JS objects (DOM, fetch responses) without serializing |
+
+The mistake I see most often in code review: people serialize a 50 MB image to base64, pass it as a string, then complain WASM is "slow". They measured the JSON parser, not the module.
+
+### 2.3 Threads, `SharedArrayBuffer`, and why your headers matter
+
+WASM threads = `SharedArrayBuffer` + atomics + `Worker`. Browsers gate `SharedArrayBuffer` behind two response headers (Spectre mitigation):
+
+```
+Cross-Origin-Opener-Policy:   same-origin
+Cross-Origin-Embedder-Policy: require-corp
 ```
 
-## A Practical Example: PolyGlyph
-For a better understanding on how WASM can help us with our architecture when it comes to complex computations we imagine a OCR related task and our Team isn't sure how to start solving it. 
-Only a few Team members now Docker/Kubernetes and how to use them to deploy our application. Also the knowledge of Programmimg languages is quite shared, and everyone tries to force the usage of its favorite.
+Without both, `WebAssembly.Memory({shared: true})` throws and any pthreads-using module silently degrades to single-threaded — usually visible only as a 4–8× regression in production. This is the single most common "works in dev, breaks behind the CDN" footgun.
 
-### A possible solution on how we share the workload among our Team preferred languages
-- Rust => for memory safe preprocessing (grayscale/contrast) 
-- C++ => Machine Learning Core (ONNX runtime interface)
-- Python => with Pyodide data processing (saving output to custom dataframe)
-- GO => Enterprise compliance checks (Regex PII data masking)
-- Vue => UI/UX
+### 2.4 The Component Model in one paragraph
 
-### Our project structure
+Core WASM only speaks `i32`/`i64`/`f32`/`f64`. The **Component Model** adds a higher-level type system — strings, lists, records, variants, resources — described in **WIT** (`*.wit` files). Tools like [`wit-bindgen`](https://github.com/bytecodealliance/wit-bindgen) and [`jco`](https://github.com/bytecodealliance/jco) generate the marshaling glue per language. The practical upshot: in 2024+ you can declare `fn ocr(image: list<u8>) -> result<string, error>` once and have Rust, Python, Go (via TinyGo), and JS bindings generated. This is what kills the "ad-hoc JSON-over-i32-pointers" era we've been living in.
+
+---
+
+## Part 3 — PolyGlyph: A Polyglot Case Study
+
+To make the boundary concrete, let's build **PolyGlyph**: a fully client-side OCR pipeline that processes images **without ever leaving the browser**. No backend, no GPU cluster, no PII over the wire. It's deliberately polyglot — not because that is wise (it usually isn't), but because it forces every interesting WASM problem into one repo.
+
+### 3.1 Why polyglot at all?
+
+The honest answer for a senior audience: **most of the time, don't**. Pick one language (probably Rust) and own the toolchain. Go polyglot only when you have:
+
+- A non-trivial **legacy native codebase** you cannot rewrite (typical for ML inference, codecs, CAD kernels).
+- A **third-party model or library** that exists only in one ecosystem (e.g., `onnxruntime` C++, `pandas` in Python).
+- A **team-skills constraint** where rewriting is more expensive than paying the polyglot tax.
+
+PolyGlyph hits all three, which is why it's a useful teaching example.
+
+### 3.2 Role split
+
+| Module | Language | Why it lives in WASM | Real cost |
+|---|---|---|---|
+| Image preprocess (grayscale, contrast) | **Rust** | Tight loop on pixel bytes; zero-cost FFI via `wasm-bindgen` | ~50–200 KB `.wasm` |
+| OCR inference (CRNN + CTC decode) | **C++ / Emscripten** | Reuse `onnxruntime` and existing C++ kernels | 2–10 MB `.wasm` + model |
+| PII masking (regex) | **Go / TinyGo** | Re-use existing enterprise regex rules from Go services | 300–800 KB (TinyGo) vs ~2–10 MB (stdlib Go) |
+| Post-analysis (stats, dataframe) | **Python / Pyodide** | Reuse `pandas`/`numpy` snippets unchanged | **~10 MB** runtime + pkgs |
+| UI | **Vue 3 / JS** | DOM, file input, orchestration | — |
+
+### 3.3 End-to-end data flow
+
+**Follow the bytes**, and note the colour of every boundary crossing.
+
+```
+   ┌──────────────┐ file
+   │  <input>     │────────────┐
+   └──────────────┘            ▼
+                       ┌───────────────┐
+                       │   Vue (JS)    │  RGBA bytes in JS heap
+                       │  drawImage    │
+                       └──────┬────────┘
+                              │ (1) HEAPU8.set  ── copy ──►
+                              ▼
+                  ┌─────────────────────────┐
+                  │ Shared Linear Memory    │  one big Uint8Array
+                  └───┬──────┬──────┬───────┘
+                      │      │      │
+                      ▼      ▼      ▼
+                  ┌──────┐ ┌─────┐ ┌────────┐
+                  │ Rust │ │ C++ │ │  Go    │
+                  │ pre- │ │ OCR │ │ regex  │
+                  │ proc │ │ CRNN│ │ PII    │
+                  └──┬───┘ └──┬──┘ └───┬────┘
+                     │ (2)    │ (3)    │ (4)
+                     │ in-place│ ptr   │ string via syscall/js
+                     ▼ pixels  ▼ → str ▼
+                  ┌─────────────────────────┐
+                  │   JS orchestrator       │
+                  └──────────────┬──────────┘
+                                 │ (5) string copy into Pyodide
+                                 ▼
+                            ┌─────────┐
+                            │ Python  │  pandas-style metrics
+                            │ Pyodide │  (own linear memory!)
+                            └────┬────┘
+                                 │ (6) PyProxy.toJs()
+                                 ▼
+                            ┌─────────┐
+                            │  Vue UI │
+                            └─────────┘
+```
+
+Key thing to internalize: **Rust, C++, and Go each run as separate WASM instances with their own linear memories.** They look like "one app" only because JS is the broker copying bytes between them. There is **no** shared heap. Every arrow above is either a copy or an `externref` handoff.
+
+### 3.4 Project structure
+
 Even with all these different languages we put them all into one project with a structure similar to this.
 ```shell
 .
@@ -142,9 +214,9 @@ Even with all these different languages we put them all into one project with a 
 This helps us to divide our workload into different sections where our
 core engines are living under `/modules` our frontend logic is in `/src-vue` and our data processing is in `/python_scripts` and in `/public/models`.
 
-### A look into the Rust Preprocessor
-Rust has a dedicated crate for WASM called `wasm-bindgen` which is easy to use and provides a simple way to expose Rust functions to JavaScript. Which means we need to write less glue code and can reduce potential overhead. 
-This makes it perfect to process raw data safely without risks of buffer overflows.
+### 3.5 Rust — the zero-overhead reference
+
+Rust is the canonical WASM target for a reason: `wasm-bindgen` + `wasm-pack` produce small modules (often <100 KB after `wasm-opt -Oz`) with no GC and no runtime to ship. More importantly, it has the cleanest **borrow-as-slice** boundary: `&mut [u8]` on the Rust side is *the same bytes* as `Uint8Array` on the JS side — no copy on the way in.
 ```Rust
 use wasm_bindgen::prelude::*;
 
@@ -164,12 +236,50 @@ pub fn preprocess_image_channels(pixels: &mut [u8], width: u32, height: u32) {
     }
 }
 ```
-More than this is not needed to enable communication between JavaScript and Rust.
+**What's actually happening under the hood:**
 
-### A look into the C++ Machine learning core
-C++ as one of the widely used programming languages, especially when it comes to performance and legacy code reuse.
-With C++ we have a highly optimized native codebase which we can see after we compile it via emscripten cause this will create nearly bare-metal assembly instruction code.
-Also it enables us to load and manipulate quite heavy models and data structures directly within Webassembly.
+- `wasm-bindgen` generates a `.js` shim that, for `&mut [u8]`, does *not* `memcpy` — it hands Rust a pointer (`i32`) into JS's view of the WASM heap and a length. The loop mutates pixels in place. Round-trip cost ≈ a single function call.
+- Contrast this with the equivalent in raw Emscripten C, where you'd typically `Module._malloc(n)` + `HEAPU8.set(...)` + call + `Module._free(...)`. That's two extra memcpys and two boundary crossings per call.
+- **Senior takeaway:** if your hot path is "JS calls Rust 60 times per frame on a `Uint8Array`", you want `wasm-bindgen` with `&mut [u8]` and you want to avoid `JsValue` round-tripping. Profile in DevTools → Performance; the "WebAssembly" tracks show inline call costs.
+
+**Size budget (release profile, `wasm-opt -Oz`, real PolyGlyph build):**
+
+```
+rust_preprocessor_bg.wasm   72 KB   (38 KB brotli)
+rust_preprocessor.js        18 KB   (auto-generated glue)
+```
+
+That's small enough to inline into your main bundle. Keep it that way: every `use serde_json` or `getrandom` you add can pull in tens of KB.
+
+### 3.6 C++ — when you *must* reuse a native codebase
+
+C++ is in PolyGlyph for exactly one reason: **ONNX Runtime ships a C++ API and a maintained Emscripten build**. Rewriting ONNX in Rust is a multi-year project; cross-compiling it is a weekend. This is the realistic case for C++/WASM in 2025 — not "C++ is fast", but "C++ is what the library exists in".
+
+Rather than reproducing 100 lines of ONNX/CTC code here's the **interface stub** that matters.
+
+```cpp
+// Three exports are all JS needs to see:
+extern "C" {
+  EMSCRIPTEN_KEEPALIVE uint8_t*    allocate_wasm_buffer(int size);
+  EMSCRIPTEN_KEEPALIVE void        free_wasm_buffer(uint8_t* ptr);
+  EMSCRIPTEN_KEEPALIVE const char* process_image_to_string(
+      uint8_t* rgba_data, int width, int height);
+}
+// Inside: bilinear resize → grayscale-normalize → onnxruntime CRNN session
+//         → CTC greedy decode → return pointer into a static std::string buffer.
+```
+
+**What's interesting here is *not* the ONNX code — it's the ABI:**
+
+- `allocate_wasm_buffer` / `free_wasm_buffer` exist because **JS owns the lifecycle of bytes in linear memory**. There is no GC reaching across the boundary; if JS forgets to call `free_wasm_buffer`, you have a textbook C leak that lives until the page is closed.
+- `process_image_to_string` returns a `const char*` — a **pointer into the module's static memory**. The JS side reads it with `Module.UTF8ToString(ptr)`, which walks bytes until a NUL. If C++ ever returns binary data this way, you'll truncate at the first zero byte. Use `(ptr, len)` pairs for anything non-textual.
+- The `static std::string g_output_text` is a deliberate, well-known footgun: the next call overwrites it. Fine for a single-threaded pipeline; a race condition the moment you introduce Web Workers.
+- ONNX Runtime's Emscripten build is **~8–12 MB** (`.wasm` + glue), and the CRNN model is another **~10 MB**. That's the real cost of "just running ONNX in the browser". Streaming-compile (`WebAssembly.compileStreaming`) and serve with `Content-Encoding: br` — Brotli typically cuts `.wasm` by ~50%.
+
+**When to actually do this:** when the model is small, the user has bandwidth, and inference latency or privacy beats round-tripping to a server. Otherwise: keep ONNX server-side and use WASM only for the preprocessing/postprocessing.
+
+<details>
+<summary>Click to expand the full C++ reference implementation</summary>
 
 ```CPP
 #include <iostream>
@@ -272,7 +382,7 @@ extern "C" {
 
         // 3. Extract output shape parameters
         // Output tensor shape is [Sequence Length (typically 25), Batch (1), Vocabulary Size (37)]
-        auto output_shape = output_tensors Qu0].GetTensorTypeAndShapeInfo().GetShape();
+        auto output_shape = output_tensors[0].GetTensorTypeAndShapeInfo().GetShape();
         int seq_len = output_shape[0];
         int alphabet_size = output_shape[2];
 
@@ -287,9 +397,24 @@ extern "C" {
 }
 ```
 
-### A look into our Go module
-With TinyGo we're able to compile existing libraries, routing rules and other components into Webassembly. 
-This enables us to create a fully native Webassembly module that can be used in the browser without any additional dependencies or plugins. 
+
+</details>
+
+### 3.7 Go — and the TinyGo vs. stdlib trade-off
+
+The reason Go is in PolyGlyph: the company already has battle-tested PII-masking regexes in Go services and doesn't want a second source of truth. Two paths to ship Go as WASM, and the choice is consequential:
+
+| | **stdlib `GOOS=js GOARCH=wasm`** | **TinyGo** |
+|---|---|---|
+| Binary size | 2–10 MB (drags the full Go runtime) | 300–800 KB |
+| Goroutines | Full scheduler | Cooperative subset |
+| `reflect` / `encoding/json` | Full | Partial / patchy |
+| Startup time | ~100–300 ms parse+init | ~10–30 ms |
+| Drop-in for arbitrary Go libs | Mostly yes | **No** — many deps don't compile |
+
+For a single regex function, TinyGo is the obvious choice. For "compile our existing 50k-LOC service", you'll fight TinyGo and probably need stdlib Go — at which point you should question whether this belongs in the browser at all.
+
+The `syscall/js` API used below is the **pre-Component-Model** way to talk to JS — verbose, untyped, but stable. With WASI 0.2 + `wit-bindgen-go` this is starting to look very different; expect the boilerplate to disappear in the next 12 months.
 ```Go
 package main
 
@@ -317,9 +442,22 @@ func main() {
 }
 ```
 
-### A look into the Python (Pyodide) module
-With this we can have Client-Side Data Science cause Pyodide enables us to have a full Python runtime compiled to WASM.
-This enables us to use existing Pandas or Numpy libraries/scripts directly.
+### 3.8 Python via Pyodide — useful, but the elephant in the bundle
+
+[Pyodide](https://pyodide.org/) is **CPython compiled to WASM** plus a curated set of scientific packages. For PolyGlyph's post-analysis (a few `pandas`-style metrics on a string) it's overkill — but if your data scientists already wrote the script and you don't want to port it, Pyodide turns "rewrite in JS" into "ship the runtime".
+
+The trade-off is **brutal in bytes**:
+
+- Core Pyodide runtime: **~6.5 MB** Brotli-compressed, ~11 MB uncompressed.
+- Add `numpy`: +3.5 MB. Add `pandas`: +8 MB. ([Pyodide size docs](https://pyodide.org/en/stable/usage/wasm-constraints.html))
+- First-load cold start: typically 1–3 s on a fast connection, dominated by package download + module instantiate.
+
+**Practical patterns:**
+
+- Load Pyodide **lazily** on first use, not at page load. Show a "warming up" state.
+- Cache the runtime in a Service Worker — repeat visits become instant.
+- Use **PyProxy** carefully: every `pyodide.globals.get('foo')(jsObj)` is a boundary crossing that converts via a proxy table; for tight loops, pre-convert.
+- Consider whether `mathjs` / `arquero` / hand-written JS would do the same job in 200 KB.
 ```Python
 // Load the Pyodide WASM Runtime
 let pyodide = await loadPyodide();
@@ -341,9 +479,11 @@ const results = analyze(finalOcrText);
 console.log("Python analysis metrics:", results.toJs());
 ```
 
-### How can we bundle this
-For the frontend developers it is important to have multiple ways to build the wasm files. 
-For this we need to adapt the `package.json`.
+### 3.9 Bundling: Vite, COOP/COEP, and the things that bite in production
+
+This is the section worth printing out and pinning to your monitor. It's where most "it works on my machine" WASM stories die.
+
+**Build-time:** three separate toolchains (`wasm-pack`, `tinygo`, `emcmake`) produce three separate `.wasm` + glue pairs into `public/wasm/`. Keep them out of `node_modules` and out of Vite's transform pipeline — they're already optimized.
 ```json
 {
   "name": "polyglot-wasm-ocr",
@@ -367,7 +507,9 @@ For this we need to adapt the `package.json`.
   }
 }
 ```
-To enabled it within vue we need to register the wasm modules within our `vite.config.js`.
+**Runtime headers — the COOP/COEP story:**
+
+The `vite.config.js` below sets two HTTP response headers on the dev server. They look innocuous but they unlock `SharedArrayBuffer` (Spectre mitigation, see §2.3). Without them, anything using WASM threads — that includes `onnxruntime-web`'s threaded build, FFmpeg-wasm, Pyodide's threaded matrix ops — silently falls back to the slow single-threaded path. **Set these headers at your CDN/edge too, not just in dev**, or your prod build will quietly regress. The same flags also break embedding cross-origin iframes/images that don't send `Cross-Origin-Resource-Policy`, so plan for it.
 ```javascript
 import { defineConfig } from 'vite';
 import react from '@vitejs/react-refresh';
@@ -392,9 +534,13 @@ export default defineConfig({
 });
 ```
 
-### Vue frontend
-Now the frontend Team can directly use our modules instead of installing heavy frontend npm packages.
-With this structure we have all running the same web worker/browser tab thread which makes it simple to transfer data between the different modules (languages)
+### 3.10 Vue frontend — JS as the broker
+
+Vue is doing two jobs here: the UI, and **orchestration of three independent WASM instances**. The interesting bit is not the framework — it would look identical in React or Solid — but the **order, ownership, and copy semantics** of the calls.
+
+All modules run in the **same browser tab thread by default**. That's good (zero serialization between modules via shared JS heap references) and bad (one infinite loop in Rust freezes everything, including the UI). For production-grade pipelines, move the WASM modules into a `Worker` and use `postMessage` with `Transferable`s (`ArrayBuffer.transfer`) to move ownership without copying.
+
+**Note on the snippet below:** the `tokenizer.decode` call is illustrative — **not** a copy-paste production code.
 ```javascript
 <script setup>
 import {ref, onMounted} from 'vue';
@@ -485,7 +631,7 @@ const onFileSelected = async (event) => {
 
     <input type="file" @change="onFileSelected" accept="image/*"/>
 
-    <section vxl-if="ocrText">
+    <section v-if="ocrText">
       <h3>Sanitized Text Output:</h3>
       <p class="box">{{ ocrText }}</p>
     </section>
@@ -502,34 +648,222 @@ const onFileSelected = async (event) => {
 
 ```
 
-### What are the benefits of this architecture?
-- It will help us save costs upfront cause we don't need to spinn up additional clusters with expensive GPUs cause the workload is completely offloaded to the user's local machine for free.
-- Also, we gain a huge strength for our security and privacy because our wasm modules are running fully client-side in a secure WASM sandbox, this means that no sensitive data leaves the user's machine unententinely.
-Overall, we can achieve a high HIPAA, GDPR compliance with less effort compared to the traditional approach with several containers and communication over the Network protocols.
-- Our team members can now be split up based on their specific programming language knowledge to tackle different tasks with the least amount of effort.
+---
 
-### Draw backs of this architecture
-Besides all the benefits we have a few draw backs especially when it comes to the toolchain. Cause sometimes we have to pay a high tax to make our C++/Rust/Go/Python code compilable to WASM.
-C++ can require a complex CMake file while not all libraries are portable to WASM cause of POSIX threads are OS file system calls which are not available in WASM (cause it is sandboxed and only has a virtual file system).
-Some Rust crates can use legacy C libraries under the hood which are not/not easy portable to WASM.
-We also need to consider that languages like Go and Python require their own compiler and runtime environment which can add complexity to the development process when no prober tools like TinyGo or Pyodide are used we can bloat our wasm binary unnecessarily.
-Debuggin can become a nightmare especially when not prober logging is used, because inside the console of the browser we only see the unreadable obfuscated memory addresses of a wasm module but not the actual code nor any other helpfull information. 
+## Interlude — Paradigm Shift: Bypassing the DOM with UI Runtimes (Qt/QML)
 
-## WASM drawbacks
-Every architecture/tool has its drawbacks, and WASM is no exception.
+PolyGlyph above is the **hybrid layout model** that almost every WASM tutorial assumes: a normal HTML/CSS/JS app, with computational hotspots offloaded to WebAssembly modules. The browser still owns layout, styling, accessibility, and event dispatch; WASM is a co-processor.
 
-| 32-bit architecture                                                 | JS interop overhead                                          | binary bloat                                                                           |
-|---------------------------------------------------------------------|--------------------------------------------------------------|----------------------------------------------------------------------------------------|
-| for standard WASM                                                   | Passing objects between requires serialization and data copy | Languages which ship their own standard library or runtimes lead to bigger .wasm files |
-| Limits linear memory to 4GB (can be a hurdle for data-heavy C++apps | Can negate the performance when used too frequent            | Can slow down initial page loading compared to lightweight JS                          |                                                                                     
+There is a second, very different model that's worth knowing about — especially if you come from a desktop, embedded, or games background. Frameworks like [**Qt for WebAssembly**](https://doc.qt.io/qt-6/wasm.html) (using QML) treat the browser tab as a **bare graphics runtime** and bypass the DOM entirely.
 
+```
+Traditional Web WASM (PolyGlyph):
+  [React / Vue components + DOM] ◄──(JS ↔ WASM boundary)──► [WASM modules]
 
-## Summary
-WASM didn't come to kill JavaScript it came to give it a superpower.
-It started as a tool to make web browsers faster, but it has evolved into a secure, language-agnostic,
-ultra-fast sandbox for cloud and edge computing
-When creating additional microservices consider using WASM as optional choice
+Qt / QML App Runtime WASM:
+  [QML declarative UI + C++ core] ──► compiled to WASM ──► paints directly to
+                                                          <canvas> via WebGL / WebGPU
+```
 
+When you compile a declarative QML application to WebAssembly, the browser sees **one `<canvas>` and one big `.wasm` blob**. Inside that blob runs a native C++ engine — Qt's own scene graph, layout, animation, and input subsystems — that maintains its own widget tree and rasterizes pixels straight into the canvas via WebGL (today) or WebGPU (increasingly). The browser's DOM layout/styling/reflow pipeline is never touched.
+
+A trivial QML example to make the shape of it concrete:
+
+```qml
+import QtQuick
+import QtQuick.Controls
+
+ApplicationWindow {
+    width: 400; height: 350
+    visible: true; color: "#121212"
+
+    Column {
+        anchors.centerIn: parent
+        spacing: 25
+
+        Rectangle {
+            id: customButton
+            width: 220; height: 60; radius: 30
+            color: buttonMouseArea.pressed ? "#deff9a" : "#1e1e1e"
+            border.color: "#deff9a"; border.width: 2
+
+            Behavior on color { ColorAnimation { duration: 150 } }
+
+            Text {
+                anchors.centerIn: parent
+                text: "Run Native C++ Hash"
+                font.bold: true; color: "#ffffff"
+            }
+
+            MouseArea {
+                id: buttonMouseArea
+                anchors.fill: parent
+                onClicked: {
+                    // Direct UI-to-native call inside the same compiled sandbox binary.
+                    // No JS↔WASM marshaling, no DOM event round-trip.
+                    let result = backend.computeHeavyHash("SecureWasmInputData_2026");
+                    hashDisplay.text = result;
+                }
+            }
+        }
+
+        Text {
+            id: hashDisplay
+            text: "Click button to compute SHA-256"
+            color: "#daffde"
+            font.family: "Monospace"
+        }
+    }
+}
+```
+
+### Why an architect should care
+
+- **True cross-platform code reuse.** The same QML + C++ codebase compiles natively for Windows, macOS, Linux, iOS, Android — *and* the browser, via the same source. No second frontend.
+- **Elimination of JS-framework churn.** The UI is rendered by a highly tuned C++ scene graph running at 60+ FPS, with no CSS specificity wars, no hydration mismatches, and no per-browser DOM layout-engine quirks.
+- **Single-process, single-boundary call cost.** The "UI" and the "backend C++" live in the *same* WASM instance and the *same* linear memory — that QML `onClicked` calling `backend.computeHeavyHash(...)` is an in-process C++ call, not a JS↔WASM boundary crossing. Contrast with PolyGlyph, where every Rust/C++/Go call pays the boundary tax (see §2.2).
+
+### Why most teams should still hesitate
+
+The trade-offs are not subtle, and they're the inverse of every benefit:
+
+- **Binary size is brutal.** A non-trivial Qt/WASM app is typically **10–40 MB** of `.wasm` + glue before your own code, dominated by the Qt runtime and any used modules (`QtQuick`, `QtQuickControls`, `QtCharts`). Compare with a Vue + tiny Rust module at <500 KB.
+- **You opt out of the web platform.** No real DOM means: accessibility tools (screen readers) see one opaque `<canvas>`; browser text selection, find-in-page, translate, password managers, and SEO crawlers all stop working. Qt has been improving its a11y bridge, but it is **not** at parity with HTML.
+- **No `SharedArrayBuffer` headers, no threads.** Qt/WASM threaded builds need COOP/COEP just like §2.3 — and the threaded build is significantly larger again.
+- **Mobile and low-end devices suffer.** A 20 MB download + WebGL context + canvas-driven scroll is a different performance profile than an HTML page; expect issues on cheap Android devices.
+- **It is a paradigm choice, not a feature flag.** You cannot incrementally mix Qt/QML and React/Vue in the same page in any sane way. Pick one.
+
+### When this model actually wins
+
+- You're porting an **existing Qt desktop product** to the browser and want one codebase across desktop/mobile/web (CAD tools, industrial HMIs, scientific instruments, trading terminals).
+- The UI is **graphics-heavy and non-document-like** — timelines, node graphs, 3D viewports, DAW-style editors — where the DOM would fight you anyway.
+- You control the deployment context (kiosks, internal apps, embedded WebViews) where bundle size, SEO, and accessibility constraints are relaxed.
+
+For the typical "I have a SaaS dashboard" case, this is the wrong tool. But it's worth knowing the model exists, because it reframes the question: **WASM is not just a co-processor for the DOM — it is also a delivery vehicle for entire native application runtimes.** Figma (their own C++ renderer on canvas), Google Earth, and Photoshop Web sit on a spectrum with Qt/QML; understanding both ends of that spectrum is what separates senior architectural judgement from "just add a WASM module".
+
+---
+
+## Part 4 — Server-Side WASM (the other half of the story)
+
+Everything we've looked at so far — the PolyGlyph polyglot pipeline in Part 3, and the Qt/QML canvas-runtime model in the Interlude — lives in the **browser**. Two very different shapes (co-processor vs. full native runtime), but the same host: a tab, a JS engine, a DOM (or a `<canvas>` standing in for one).
+
+Flip the deployment target and almost every constraint inverts. There is no DOM to bypass, no `SharedArrayBuffer` headers to negotiate, no 10 MB Pyodide download to amortize over a user's session. What you *do* get is the property the Hykes quote was really about: a **portable, sandboxed, capability-scoped process** that starts in microseconds and runs the same binary on a laptop, an edge POP, and a Kubernetes node. That is where the most interesting WASM activity in 2024–2025 is happening, and it's the half of the story that browser-centric tutorials almost always skip.
+
+The server-side runtime landscape today:
+
+| Runtime | Use case | Notable property |
+|---|---|---|
+| [Wasmtime](https://wasmtime.dev/) | General-purpose embed (Bytecode Alliance reference) | First-class Component Model + WASI 0.2 support |
+| [Wasmer](https://wasmer.io/) | General-purpose, multi-engine | Multiple backends (Cranelift, LLVM, Singlepass) |
+| [WasmEdge](https://wasmedge.org/) | Edge / Kubernetes (CNCF) | AOT compile, gRPC, HTTPS, AI extensions |
+| [Fermyon Spin](https://www.fermyon.com/spin) | HTTP microservices in WASM | Sub-millisecond cold start; one component per request |
+| [wasmCloud](https://wasmcloud.com/) | Distributed actors with WIT contracts | Hot-swappable components, capability providers |
+| Cloudflare Workers / Fastly Compute@Edge | Edge functions | V8 isolates + WASM (CF); Wasmtime-derived (Fastly) |
+
+**Why this matters:** Spin starts a WASM HTTP handler in **~1 ms** vs ~100–500 ms for a typical container cold start ([Fermyon benchmarks](https://www.fermyon.com/blog/cold-start-time)). That changes the economics of "scale-to-zero" workloads — function-per-request becomes viable where containers were too slow. The trade-off: no threads on the server side until you adopt `wasi-threads`, no raw sockets, and a smaller library ecosystem than Node/Python.
+
+If your team is evaluating "serverless v2", this is the technology to benchmark against AWS Lambda / Cloud Run. The cost model (per-millisecond billing on microsecond starts) is materially different.
+
+---
+
+## Part 5 — Debugging, Security, and the Stuff Nobody Demos
+
+### 5.1 Debugging WASM in 2025
+
+The old answer ("Chrome shows you hex offsets, good luck") is finally outdated.
+
+- **DWARF source maps** — compile with `-g` (Emscripten), `--debug` (`wasm-pack`), or `-g` (TinyGo). Chrome DevTools' [C/C++ debugging extension](https://chromewebstore.google.com/detail/cc++-devtools-support-dwa/pdcpmagijalfljmkmjngeonclgbbannb) gives you stepping, breakpoints, and variable inspection in *original C/C++/Rust source*.
+- **`console.log` from inside WASM** — import a logger from JS; Rust's `web-sys` and Emscripten's `printf` both do this for you.
+- **Stack traces** — enable name-section preservation (`--emit-symbol-map` / debug build) so traces show function names, not `wasm-function[1234]`.
+- **Server side:** Wasmtime ships `--profile=guest` and integrates with `perf`. Fermyon Spin has an OpenTelemetry exporter.
+
+### 5.2 Security — what the sandbox does and doesn't give you
+
+What it **does** give you:
+
+- Memory safety *for the host*: the guest cannot read host memory or escape its linear memory.
+- Capability-based syscalls (WASI): no ambient filesystem, no ambient network. You must explicitly grant a preopen directory or socket.
+- Deterministic execution (no instruction-level non-determinism), which makes WASM attractive for blockchains and reproducible builds.
+
+What it **does not** give you:
+
+- **Memory safety inside the guest.** A C++ buffer overflow inside a WASM module is still a buffer overflow — it just can't escape into the host. CVEs in WASM-compiled libraries are real (e.g., ImageMagick-wasm inheriting upstream CVEs).
+- **Side-channel resistance.** Spectre/Meltdown-class timing leaks still exist; that's why browsers gate `SharedArrayBuffer` behind COOP/COEP.
+- **Resource exhaustion protection by default.** A guest can `malloc` until linear memory exhausts (limit is 4 GiB pre-`memory64`). Runtimes need explicit fuel/memory limits.
+- **Supply-chain protection.** A malicious `.wasm` published as a Vite plugin is no safer than a malicious JS package. Audit your binaries.
+
+---
+
+## Part 6 — Numbers, Not Vibes
+
+Pulled from public benchmarks. Use as order-of-magnitude reference, not promises — measure your own workload.
+
+| Metric | Typical value | Source |
+|---|---|---|
+| WASM execution vs. native (CPU-bound) | 0.5×–0.95× | [PLDI '19 "Not so fast"](https://dl.acm.org/doi/10.1145/3314221.3314623); various Bytecode Alliance benchmarks |
+| Wasmtime cold start (function instantiate) | 5–50 µs (AOT, pre-instantiated) | [Wasmtime perf docs](https://docs.wasmtime.dev/) |
+| Spin HTTP handler cold start | ~1 ms | [Fermyon](https://www.fermyon.com/blog/cold-start-time) |
+| AWS Lambda (Node) cold start | 100–800 ms | AWS public data |
+| Container cold start (k8s scheduling) | 1–10 s | Industry consensus |
+| Rust `wasm-pack` "hello world" `.wasm` | ~2 KB (after `wasm-opt -Oz`) | rustwasm book |
+| TinyGo "hello" `.wasm` | ~10 KB | TinyGo docs |
+| Stdlib Go `.wasm` (`GOOS=js`) | ~2–10 MB | Go release notes |
+| Pyodide core runtime | ~6.5 MB brotli | [Pyodide constraints](https://pyodide.org/en/stable/usage/wasm-constraints.html) |
+| `onnxruntime-web` (threaded) | ~10 MB | onnxruntime releases |
+| JS↔WASM call overhead (numeric args) | ~5–20 ns | V8 / SpiderMonkey blog posts |
+
+The takeaway: WASM is "near-native" for **CPU-bound** code. The moment your workload is dominated by **boundary crossings** or **large data marshaling**, the language and ABI you chose matter far more than "WASM is fast".
+
+---
+
+## Part 7 — When to Choose WASM (decision section)
+
+This replaces the old benefits/drawbacks/matrix triad with a single guide.
+
+**🟢 Reach for WASM when:**
+
+- You need **ephemeral, scale-to-zero** workloads where container cold start is the bottleneck (edge functions, per-request isolation, multi-tenant plugin hosts).
+- You have a **legacy native codebase** (C/C++/Rust) that's expensive to port to JS or to keep behind a network call.
+- You need a **safe, sandboxed plugin runtime** for untrusted code (Envoy filters, Shopify Functions, database UDFs, IDE extensions).
+- Your **data is sensitive** and shouldn't leave the user's device (on-device ML, client-side crypto, PII processing).
+- You're building a **portable component** that must run identically in browser, edge, and server.
+
+**🐳 Stick with containers / Node / native processes when:**
+
+- The workload is **long-running and warm** — cold start doesn't matter; throughput and library ecosystem do.
+- You are **OS-kernel-coupled** (raw sockets, eBPF, deep POSIX, kernel-bypass NICs, GPUs without WebGPU).
+- Your team is **two people and you don't have toolchain bandwidth.** Polyglot WASM has a real ops cost; one well-written Node or Go service is often the right answer.
+- You need **mature observability** today (APM, profilers, tracing). The WASM tooling is improving fast but is still behind containers.
+
+**🤔 The honest "it depends":**
+
+- Polyglot-in-one-tab (the PolyGlyph pattern). Powerful, but the surface area is large. Until the Component Model is fully shipped end-to-end, expect to hand-write glue and absorb ~10–20 MB of runtimes if Python or threaded ONNX is in the mix.
+
+---
+
+### Wrap-up
+
+WASM didn't come to kill JavaScript — it came to give the entire industry a **portable, sandboxed ABI** that JavaScript happens to host first. For mid-to-senior engineers, the productive shift in 2025 is to stop asking "is WASM faster?" and start asking:
+
+- *Where does my data cross the boundary, and how many times?*
+- *Who owns the linear memory at each step?*
+- *What's the size budget — and which runtime am I implicitly shipping?*
+- *Will the Component Model + WASI 0.2 let me delete half this glue in 12 months?*
+
+If you can answer those four questions for your system, you're already ahead of most teams adopting WASM today.
+
+### Further reading
+
+- [WebAssembly Specification (W3C)](https://www.w3.org/TR/wasm-core-2/)
+- [Component Model Book — Bytecode Alliance](https://component-model.bytecodealliance.org/)
+- [WASI 0.2 (Preview 2) overview](https://bytecodealliance.org/articles/WASI-0.2)
+- [`wasm-bindgen` guide](https://rustwasm.github.io/wasm-bindgen/)
+- [Emscripten docs](https://emscripten.org/)
+- [TinyGo WebAssembly](https://tinygo.org/docs/guides/webassembly/)
+- [Pyodide](https://pyodide.org/)
+- [Fermyon Spin](https://www.fermyon.com/spin), [wasmCloud](https://wasmcloud.com/), [Wasmtime](https://wasmtime.dev/)
+- Lin Clark, *"WebAssembly: building a new kind of ecosystem"* — the canonical talk on the Component Model.
 
 ### Thanks for reading
-I hope you enjoyed this article. And that you learned something new about WASM and its potential impact on the web development landscape.
+
+I hope this changed how you think about the JS↔WASM boundary.
