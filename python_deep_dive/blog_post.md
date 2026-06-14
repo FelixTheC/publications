@@ -23,10 +23,59 @@ From a high-level view these are the steps what the Python interpreter does when
 #### Bringing it all together
 
 ## A short intro to the C-Programming language
+C is a functional programming language and has no object-oriented features. 
+It relies heavily on structs and on the concept of pointers and references to pass data around.
+
 ### Available data types
-### Operators
+The C-Programming language comes with only a handful of data types:
+- bool
+- char
+- short
+- int
+- long
+- float
+- double
+and 2 modifier types:
+- unsigned (example: `unsigned int`)
+- signed (example: `signed int`)
+
+### Functions
+In C functions can only return one single value; this means we can't return multiple values like in Python or even a list.
+If you want to return multiple values you pass a reference to the return value as a parameter, mostly the last parameter.
+
+Simple function declaration:
+```c
+PyObject* PyObject_GetAttrString(PyObject *o, const char *attr_name) {
+    // some code
+}
+```
+
+Return value within a parameter
+```c
+void PyObject_SetAttrString(PyObject *o, const char *attr_name, PyObject *v) {
+    // some code
+}
+```
+
 ### Control flow, especially GOTO
+Besides the control flow statements like if, else, for, while, and switch, C also supports the goto statement, which can be used to jump to a specific label in the code.
+Most modern languages doesn't support this statement anymore but in general it looks like this:
+```c
+if (condition)
+    goto label;
+
+// some code
+
+label:
+    // code
+```
+
 ### Pointers
+Pointers are objects that hold the address of objects in memory (the stack). 
+These memory objects can be a simple struct or a list then the pointer will point to the first element of the list.
+
+The syntax of a pointer is `PyObject *obj` where `PyObject` is the type of the object and `obj` is the name of the pointer.
+It is also possible to have a pointer to a pointer, the syntax of a pointer to a pointer is `PyObject **item`.
 
 ## How do we get the bytecode?
 
