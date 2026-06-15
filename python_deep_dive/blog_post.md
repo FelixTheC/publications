@@ -10,18 +10,114 @@ This is not for Python beginners you will learn some deep technical details on h
 ## What happens when we run a *.py file?
 From a high-level view these are the steps what the Python interpreter does when we run a *.py file:
 
-1. The Python interpreter reads the source code file and converts it into an abstract syntax tree (AST).
-2. The AST is then compiled into bytecode, which is a low-level representation of the code that can be executed by the Python virtual machine.
-3. The bytecode is then executed by the Python virtual machine, which interprets the bytecode and executes the corresponding operations.
+1. The Python interpreter reads the source code file.
+2. Parsing the source code.
+3. Execute the operations defined within the source code.
 
-### How do we get the abstract syntax tree (AST)?
+### How does an interpreter reads/parses the source code?
+Every interpreter must tokenize the source code, like an LLM to create a meaning out of it. 
+This is done by the **lexer**.
+
+#### The lexer 
+breaks down the source code into tokens, which are the smallest meaningful units of the language. 
+For example, in Python, tokens include keywords, identifiers, operators, and literals.
+
+The list of Tokens can be found within the Python source code `Grammar/Tokens`.
+
+Here a few examples from this list
+```Text
+LPAR                    '('
+RPAR                    ')'
+LSQB                    '['
+RSQB                    ']'
+COLON                   ':'
+COMMA                   ','
+SEMI                    ';'
+```
+
+Some interresting findings within the `Parser/lexer/state.h` for the Lexer are that we can find the **maximal indentation level** which is **100**, 
+the **maximal parentheses level** of **200** and the **maximal f-string nesting level** of **150**.
+
+The list of Tokens will be feed into the Parser which extracts with the predefined grammar the "meaning" of the source code.
+
+#### The Python grammar
+can be found within the Python source code `Grammar/python.gram` or in the online [Documentation](https://docs.python.org/3/reference/grammar.html). 
+
+And looks like this
+```Text
+compound_stmt[stmt_ty]:
+    | &('def' | '@' | 'async') function_def
+    | &'if' if_stmt
+    | &('class' | '@') class_def
+    | &('with' | 'async') with_stmt
+    | &('for' | 'async') for_stmt
+    | &'try' try_stmt
+    | &'while' while_stmt
+    | match_stmt
+```
+everything is written in a grammar format where `&` is used to indicate a lookahead of predefined values which are surrounded by `" "` and `|` is used to indicate alternatives. 
+Elements like `function_def` or `if_stmt` which are not surrouned with a `"` are other defined compounds and will be used to reduce redundancy, thing of it like a function you can call.
+
+With these definitions we can build the Parser
 
 #### The Parser
+generated from the predefined grammar can be found in `Parser/parser.c`. Which contains statements like this
+```c
+// statement: compound_stmt | simple_stmts
+static asdl_stmt_seq*
+statement_rule(Parser *p)
+{
+    // more code
+}
+```
 
-#### The Lexer
+### What happens after the Parser
 
-#### Bringing it all together
+And with all of these the Python interpreter can create the AST (Abstract Syntax Tree).
+Which itself will be compiled into Python bytecode which then gets executed.
 
+The compilation will be made under `Python/compile.c` there we can find statements like
+```C
+PyCodeObject *
+_PyAST_Compile(mod_ty mod, PyObject *filename, PyCompilerFlags *pflags,
+               int optimize, PyArena *arena)
+{
+    assert(!PyErr_Occurred());
+    compiler *c = new_compiler(mod, filename, pflags, optimize, arena);
+    if (c == NULL) {
+        return NULL;
+    }
+
+    PyCodeObject *co = compiler_mod(c, mod);
+    compiler_free(c);
+    assert(co || PyErr_Occurred());
+    return co;
+}
+```
+
+or like 
+```C
+int
+_PyCompile_AstPreprocess(mod_ty mod, PyObject *filename, PyCompilerFlags *cf,
+                         int optimize, PyArena *arena, int no_const_folding)
+{
+    _PyFutureFeatures future;
+    if (!_PyFuture_FromAST(mod, filename, &future)) {
+        return -1;
+    }
+    int flags = future.ff_features | cf->cf_flags;
+    if (optimize == -1) {
+        optimize = _Py_GetConfig()->optimization_level;
+    }
+    if (!_PyAST_Preprocess(mod, arena, filename, optimize, flags, no_const_folding, 0)) {
+        return -1;
+    }
+    return 0;
+}
+```
+ 
+
+---
 ## A short intro to the C-Programming language
 C is a functional programming language and has no object-oriented features. 
 It relies heavily on structs and on the concept of pointers and references to pass data around.
@@ -42,6 +138,8 @@ and 2 modifier types:
 ### Functions
 In C functions can only return one single value; this means we can't return multiple values like in Python or even a list.
 If you want to return multiple values you pass a reference to the return value as a parameter, mostly the last parameter.
+
+> Often you will see that the return type is an `int` this is mostly to return a `success/failure` code.
 
 Simple function declaration:
 ```c
@@ -77,7 +175,7 @@ These memory objects can be a simple struct or a list then the pointer will poin
 The syntax of a pointer is `PyObject *obj` where `PyObject` is the type of the object and `obj` is the name of the pointer.
 It is also possible to have a pointer to a pointer, the syntax of a pointer to a pointer is `PyObject **item`.
 
-## How do we get the bytecode?
+---
 
 ## How does the code run in the Python virtual machine?
 the lifecycle of a Python object
