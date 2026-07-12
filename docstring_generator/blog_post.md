@@ -1,9 +1,3 @@
-This synthesis brings together the high-performance architectural details of your tool and the workflow friction created by modern AI coding assistants.
-
-Here is the comprehensive, unified Medium post ready to publish.
-
----
-
 # AI Tools Write Your Code, but Who Keeps Your Docstrings from Lying?
 
 ### Subtitle: AI assistants are great at writing a first draft. Here is why you still need a deterministic, C++ engine to stop documentation rot.
