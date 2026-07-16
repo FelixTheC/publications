@@ -1,28 +1,27 @@
-# AI Tools Write Your Code, but Who Keeps Your Docstrings from Lying?
-
-### AI assistants are great at writing a first draft. A deterministic C++ engine can keep that draft aligned with the code.
+# Who Keeps the Docstrings Accurate after an AI Assistant creates it initially?
+ 
+### A Python CLI library with a fast C++ engine will keep them all the time aligned with your code.
 
 ---
 
 ![A developer working with AI-assisted documentation](Gemini_Generated_Image_iu4ui4iu4ui4iu4u.png)
 
-If you write Python today, you are probably using an AI assistant. Tools such as Cursor, Copilot, and Claude Code can inspect a function and produce a polished docstring in seconds.
+Most Python developers use an AI assistant like Cursor, Copilot, or Claude Code these days. These tools can inspect a function and write a clean docstring in seconds.
 
-Case closed, right? We no longer need specialized documentation tooling.
+But passive AI documentation has a major flaw: **context drift**.
 
-Except there is a quiet problem that defeats passive AI-assisted documentation: **context drift**.
+An AI generates a great description the first time, but it won't automatically update that description when someone changes the function three weeks later. 
+If a parameter becomes optional, a return type changes, or a new exception is raised, the old docstring stays exactly as it was. The documentation becomes out of date and misleading.
 
-An assistant can generate a good description when asked, but it does not automatically revisit that description when somebody changes the function three weeks later. A parameter becomes optional, a return type changes, or a new exception is raised—and the old docstring stays where it is.
-
-At that point, the documentation is no longer merely incomplete. It is actively misleading.
-
-That is the gap I built [`docstring_generator`](https://github.com/FelixTheC/docstring_generator) to close. It reads Python signatures and type hints, generates structured docstrings, and updates the mechanical parts when the code changes. The goal is not to replace the useful prose written by a developer or an AI. It is to keep that prose attached to a structure that reflects the code.
+I built [`docstring_generator`](https://github.com/FelixTheC/docstring_generator) to solve this. 
+It reads Python signatures and type hints, generates structured docstrings, and updates the mechanical parts when the code changes. 
+It does not replace the helpful prose written by a developer or an AI — it just keeps that prose tied to a structure that matches the actual code.
 
 ---
 
 ## What the Library Does
 
-At its simplest, `docstring_generator` can process one Python file or an entire directory:
+At its simplest, `docstring_generator` can process a single Python file or an entire directory:
 
 ```shell
 pip install docstring-generator
@@ -31,13 +30,13 @@ gendocs_new service.py
 gendocs_new src/
 ```
 
-It generates docstrings for standalone functions and class methods, handles both `def` and `async def`, and derives parameter and return information from annotations and default values. `self` and `cls` are omitted from parameter sections, so generated output follows normal documentation conventions.
+It handles standalone functions and class methods (both `def` and `async def`). Pulls parameters and return information from type annotations and default values, automatically omitting `self` and `cls`.
 
 Three common formats are supported:
 
-- NumPy, the default
+- NumPy (default)
 - Google
-- reStructuredText, for tools such as Sphinx
+- reStructuredText (for Sphinx)
 
 For example:
 
@@ -46,9 +45,9 @@ async def fetch_user(user_id: int, include_profile: bool = False) -> dict:
     ...
 ```
 
-can become a consistently structured NumPy, Google, or reStructuredText docstring without somebody manually copying the signature into prose.
-
-The tool also protects mixed-style codebases. If an existing docstring uses a different convention, it detects that style and refuses to silently rewrite it. An intentional migration is still possible:
+gets a consistently structured docstring without anyone copying the signature into prose by hand.
+ 
+If you have a mixed codebase, it detects the existing style and won't overwrite it silently. If you want to force a change, you can do it explicitly:
 
 ```shell
 gendocs_new src/ --style google --overwrite-style true
@@ -84,9 +83,9 @@ The productive division of labor is straightforward: let AI or a developer expla
 
 ---
 
-## Preserve the Explanations That Matter
+## Keeping Your Explanations
 
-Before generation, `$1`, `$2`, and subsequent markers associate descriptions with positional parameters. A `>>` marker does the same for the return value:
+You can use `$1`, `$2`, and `>>` markers to pin specific descriptions to parameters and returns:
 
 ```python
 def calculate_total(items: list[float], tax_rate: float) -> float:
@@ -99,7 +98,7 @@ def calculate_total(items: list[float], tax_rate: float) -> float:
     return sum(items) * (1 + tax_rate)
 ```
 
-With Google style selected, the result is structured without losing those descriptions:
+With Google style selected, the result will become this:
 
 ```python
 def calculate_total(items: list[float], tax_rate: float) -> float:
@@ -118,9 +117,9 @@ This is where AI fits well: use it to draft meaningful descriptions, then use th
 
 ---
 
-## Make Failure Modes Part of the Contract
+## Documenting Exceptions Automatically
 
-The extension analyzes function bodies for explicit `raise` statements and adds them to a `Raises` section. That is particularly useful in validators and API code:
+The tool parses function bodies for explicit `raise` statements and builds a `Raises` section:
 
 ```python
 @field_validator("api_config", mode="before")
@@ -134,21 +133,124 @@ def validate_api_config(cls, values: dict) -> dict:
     return values
 ```
 
-The generated documentation records both `ValueError` and `TypeError` instead of relying on somebody to notice and transcribe them. It is static analysis rather than a guess, and multiple raises in the same function are supported.
+It records both `ValueError` and `TypeError` directly from the code instead of waiting for someone to manually transcribe them. 
+Note that this tracks explicit exceptions in the function body; it won't catch errors thrown deeper down the call stack.
+
+```python
+@field_validator("api_config", mode="before")
+@classmethod
+def validate_api_config(cls, values: dict) -> dict:
+    """
+    Parameters
+    ----------
+    values : dict [Argument]
+
+    Returns
+    -------
+    dict
+
+    Raises
+    -------
+    ValueError
+        If not required_keys
+    TypeError
+        If not isinstance(required_keys, dict)
+    """
+        
+    required_keys = values.get("required_keys")
+    if not required_keys:
+        raise ValueError("required_keys must be provided")
+    if not isinstance(required_keys, dict):
+        raise TypeError("required_keys must be a dictionary")
+    return values
+```
+
+More complex examples
+```python
+def reraise_with_context(data: dict, key: str):
+    try:
+        return data[key]
+    except KeyError as exc:
+        raise NotFoundError("DictEntry", key) from exc
+```
+becomes
+```python
+def reraise_with_context(data: dict, key: str):
+    """
+    Catch a KeyError and re-raise it chained to a NotFoundError
+    using `raise X from Y` syntax.
+    
+    Parameters
+    ----------
+    data : dict [Argument]
+    key : str [Argument]
+
+    Raises
+    -------
+    NotFoundError
+        Re-Raised from KeyError
+    """
+    try:
+        return data[key]
+    except KeyError as exc:
+        raise NotFoundError("DictEntry", key) from exc
+```
+
+Limitations, when it comes to re-raising from multiple previous exceptions
+```python
+def parse_number(text: str) -> float:
+    try:
+        result = float(text)
+    except (ValueError, OverflowError) as exc:
+        raise ValidationError("text", f"cannot parse '{text}' as a number") from exc
+    return result
+```
+
+becomes
+
+```python
+def parse_number(text: str) -> float:
+    """
+    Raise ValueError for non-numeric text or OverflowError for extremely
+    large exponent notation; demonstrates multi-exception catching pattern.
+    
+    Parameters
+    ----------
+    text : str [Argument]
+        text or OverflowError for extremely
+    large exponent notation; demonstrates multi-exception catching pattern.
+
+    Returns
+    -------
+    float
+
+    Raises
+    -------
+    ValidationError
+        If a certain condition is met.
+    """
+    try:
+        result = float(text)
+    except (ValueError, OverflowError) as exc:
+        raise ValidationError("text", f"cannot parse '{text}' as a number") from exc
+    return result
+```
+
+*If a certain condition is met.* means that currently I couldn't figure out the exact reason for this exception.
 
 As with any static analysis, this describes what is visible in the function body; it is not a promise to discover every exception that could emerge from arbitrary code called further down the stack.
 
 ---
 
-## Safe Enough for an Existing Codebase
+## Safe for Existing Codebases
 
-Running a generator across a mature repository should be reviewable. Dry-run mode shows a unified diff without changing files:
+You can preview all changes before modifying any files using dry-run mode:
 
 ```shell
 gendocs_new src/ --dry-run
 ```
 
-For a large Git repository, changed-only mode limits work to modified and staged Python files:
+To scope the changes to only your current work in Git, use the `--changed-only` flag:
 
 ```shell
 gendocs_new src/ --changed-only --dry-run
@@ -164,7 +266,7 @@ gendocs_new src/ \
   --ignore-magic
 ```
 
-Defaults belong in `pyproject.toml`, not in a command copied between developers:
+Defaults can be defined in `pyproject.toml`:
 
 ```toml
 [tool.docstring_generator]
@@ -175,19 +277,21 @@ exclude_dirs = ["tests", "migrations"]
 ignore_magic = true
 ```
 
-Command-line options override project configuration when a one-off run needs different behavior.
+**Command-line options overrides `pyproject.toml` definitions.**
 
 ---
 
 ## Coverage Checks for CI
 
-Generation fixes documentation locally; coverage auditing makes the standard enforceable for a team. Check mode scans without modifying source files:
+You can audit your documentation coverage in your build pipeline.
+
+Using `--check` to only check them without modifying any code.
 
 ```shell
 gendocs_new src/ --check
 ```
 
-Add `--strict` to treat incomplete or outdated docstrings as undocumented, and use a threshold to fail the command when coverage is too low:
+Combine it with `--strict` to mark incomplete or outdated docstrings as undocumented and a threshold to fail the build if coverage drops too low:
 
 ```shell
 gendocs_new src/ --check --strict --threshold 90
@@ -195,7 +299,7 @@ gendocs_new src/ --check --strict --threshold 90
 
 That command can run in a CI pipeline alongside tests and linting. A pull request that adds an undocumented function can then fail for a clear, reproducible reason rather than depending on reviewer memory.
 
-For local enforcement, the repository also provides a pre-commit hook:
+**There is also a pre-commit hook available:**
 
 ```yaml
 repos:
@@ -206,15 +310,16 @@ repos:
         args: [src/, --style, google]
 ```
 
-If the hook updates a file, the commit stops so the developer can review and stage the generated changes. The next run passes once the working tree is up to date.
+If the hook catches an outdated docstring, it updates the file and stops the commit so you can review the diff.
 
 ---
 
-## Why a C++ Backbone?
+## Why a C++ Core?
 
-Documentation maintenance is most useful when it is cheap enough to run repeatedly. A slow pre-commit hook eventually gets bypassed.
-
-The generation engine lives in [`docstring_generator_ext`](https://github.com/FelixTheC/docstring_generator_ext), a C++20 extension exposed to Python through pybind11. Python's `ast` module provides the signature, annotation, and function-body information; the extension turns that information into formatted docstrings and injects them into the source file.
+Pre-commit hooks and potential CI checks need to be fast. 
+ 
+The core engine lives in [`docstring_generator_ext`](https://github.com/FelixTheC/docstring_generator_ext), a C++20 extension connected to Python via pybind11. 
+Python's `ast` module handles the initial code parsing, while the C++ extension quickly formats and injects the docstrings.
 
 ```text
 Python files or directories
@@ -233,17 +338,19 @@ docstring_generator_ext
 
 The extension can also be used directly from Python through `parse_file()` and exposes a read-only `check_docstring()` coverage API. Most users, however, can stay with the CLI and `pyproject.toml` configuration.
 
-Pre-built wheels mean users do not need a local C++ toolchain for a normal installation. Building the extension from source requires Python 3.13 or newer and a C++20-capable compiler.
+Distributed pre-built wheels are available, so you don't need a local C++ compiler to install it. 
+If you want to build it from source, you will need Python 3.13+ and a compiler that supports C++20.
 
 ---
 
-## AI Plus Deterministic Tooling
+## The Right Tool for the Job
 
-AI assistants are excellent at producing a first draft and explaining domain intent. They are not persistent guardians of a changing codebase.
+AI tools are excellent for drafting copy and explaining context, but they are not built to continuously maintain a codebase.
 
-`docstring_generator` handles the repeatable part: generating docstrings from type hints, supporting sync and async code, preserving descriptions, extracting explicit exceptions, enforcing a chosen style, previewing changes, and measuring coverage in CI.
+`docstring_generator` automates the mechanical parts: tracking signatures, parsing exceptions, and enforcing formats across your team.
 
-Let AI help write the explanation. Let a fast, deterministic tool keep the documentation aligned with the code on every commit.
+Use AI to write your explanations, and use a fast, local tool to keep them accurate.
+
 
 - **GitHub:** [github.com/FelixTheC/docstring_generator](https://github.com/FelixTheC/docstring_generator)
 - **PyPI:** [pypi.org/project/docstring-generator](https://pypi.org/project/docstring-generator/)
