@@ -1,151 +1,254 @@
 # AI Tools Write Your Code, but Who Keeps Your Docstrings from Lying?
 
-### Subtitle: AI assistants are great at writing a first draft. Here is why you still need a deterministic, C++ engine to stop documentation rot.
-
----
-![Gemini_Generated_Image_iu4ui4iu4ui4iu4u.png](Gemini_Generated_Image_iu4ui4iu4ui4iu4u.png)
-
-If you are writing Python today, you are likely using an AI assistant. Tools like Cursor, Copilot, and Claude Code have completely changed the way we build software. You write a function, hit a keyboard shortcut, and an AI seamlessly populates a perfectly formatted docstring based on your implementation.
-
-Case closed, right? We don’t need specialized documentation tooling anymore.
-
-Except there is a quiet, highly frustrating problem that defeats almost all passive AI-assisted documentation efforts: **Context Drift.**
-
-AI tools are fantastic at *generating* documentation on demand, but they are completely passive. When a developer changes a function signature three weeks down the line—maybe shifting a parameter from `List[int]` to `List[int | str]`—the AI doesn't automatically fix the docstring. It sits silently until someone explicitly prompts it to rewrite the block.
-
-If the developer forgets, that docstring is now actively lying to your team.
-
-To solve this, we don’t need more AI generation; we need a deterministic **gatekeeper**. That is exactly why I built `docstring_generator`—a high-performance tool designed to bridge the gap between AI productivity and strict codebase reality.
+### AI assistants are great at writing a first draft. A deterministic C++ engine can keep that draft aligned with the code.
 
 ---
 
-## The Hidden Costs of AI Compliance
+![A developer working with AI-assisted documentation](Gemini_Generated_Image_iu4ui4iu4ui4iu4u.png)
 
-When you rely entirely on an editor extension to manage your team's documentation compliance, you run into three critical walls:
+If you write Python today, you are probably using an AI assistant. Tools such as Cursor, Copilot, and Claude Code can inspect a function and produce a polished docstring in seconds.
 
-### 1. The Token Tax & Latency
+Case closed, right? We no longer need specialized documentation tooling.
 
-Forcing a massive LLM to scan an entire enterprise repository on every single Git commit just to check if type hints match docstrings is incredibly slow and expensive.
+Except there is a quiet problem that defeats passive AI-assisted documentation: **context drift**.
 
-### 2. The Hallucination Factor
+An assistant can generate a good description when asked, but it does not automatically revisit that description when somebody changes the function three weeks later. A parameter becomes optional, a return type changes, or a new exception is raised—and the old docstring stays where it is.
 
-For strict API contracts—like ensuring your `Raises` section accurately documents every exception thrown inside a complex validation loop—you want exact static analysis, not a probabilistic guess from a model.
+At that point, the documentation is no longer merely incomplete. It is actively misleading.
 
-### 3. Destruction of Context
-
-Many basic AI prompts and simple scripts simply blow away your existing text and overwrite the entire block. If you wrote beautiful, nuanced business logic notes inside a parameter description, a blind overwrite destroys that context.
+That is the gap I built [`docstring_generator`](https://github.com/FelixTheC/docstring_generator) to close. It reads Python signatures and type hints, generates structured docstrings, and updates the mechanical parts when the code changes. The goal is not to replace the useful prose written by a developer or an AI. It is to keep that prose attached to a structure that reflects the code.
 
 ---
 
-## Why I Built a C++ Backbone for Python Docs
+## What the Library Does
 
-When you integrate an auto-formatting tool or linter into a `pre-commit` hook, performance isn't just a vanity metric—it’s a feature. If a tool takes more than a few hundred milliseconds to run, developers will start bypassing it.
+At its simplest, `docstring_generator` can process one Python file or an entire directory:
 
-To ensure `docstring_generator` scales seamlessly across massive enterprise codebases without hitting performance bottlenecks, I moved away from standard pure-Python parsing.
+```shell
+pip install docstring-generator
 
-The core engine is written in **C++** and exposed via **pybind11**. It safely parses and updates files in milliseconds. This delivers the lightning-fast execution speed developers expect from modern tools like `Ruff` or `uv`.
-
-```
-                  ┌──────────────────────────────┐
-                  │    Target: Python Codebase   │
-                  └──────────────┬───────────────┘
-                                 │
-                   [gendocs_new / pre-commit]
-                                 │
-                                 ▼
-         ┌───────────────────────────────────────────────┐
-         │         docstring_generator (CLI)             │
-         └───────────────────────┬───────────────────────┘
-                                 │
-                            (pybind11)
-                                 │
-                                 ▼
-         ┌───────────────────────────────────────────────┐
-         │      C++ Core Engine (Non-Destructive AST)     │
-         └───────────────────────┬───────────────────────┘
-                                 │
-     ┌───────────────────────────┼───────────────────────────┐
-     ▼                           ▼                           ▼
-[NumPy Style]             [Google Style]             [reStructuredText]
-
+gendocs_new service.py
+gendocs_new src/
 ```
 
----
+It generates docstrings for standalone functions and class methods, handles both `def` and `async def`, and derives parameter and return information from annotations and default values. `self` and `cls` are omitted from parameter sections, so generated output follows normal documentation conventions.
 
-## How It Works Together with Your AI Workflow
+Three common formats are supported:
 
-The most effective modern workflow isn't AI *instead* of tooling; it’s AI *plus* tooling.
+- NumPy, the default
+- Google
+- reStructuredText, for tools such as Sphinx
 
-### 1. You Lock the Context, the Engine Handles the Types
-
-You can use your AI assistant to write the initial, deep domain descriptions for your parameters. By dropping simple placeholders (`$1`, `$2`) into your initial text, you "lock" your custom notes in place.
-
-`docstring_generator` takes over the mechanical work. If you alter your type hints later, the C++ engine instantly rewrites the structural boilerplate (supporting NumPy, Google, or reStructuredText) without ever touching or overwriting your custom explanations.
-
-### 2. Exception-Aware Static Analysis
-
-Documenting failure modes is critical, especially when dealing with validation frameworks like **Pydantic** or **FastAPI**.
-
-Instead of guessing what an endpoint might throw, the tool statically extracts the exact `raise` statements directly from the AST (Abstract Syntax Tree) and automatically formats them into a dedicated `Raises` block:
+For example:
 
 ```python
-# AFTER RUNNING THE CLI ON A PYDANTIC VALIDATOR
-@field_validator("api_config", mode='before')
-@classmethod
-def validate_api_config(cls, values: dict) -> dict:
-    """
-    Parameters
-    ----------
-    cls : [Argument]
-    values : dict [Argument]
-
-    Returns
-    -------
-    dict
-
-    Raises
-    -------
-    ValueError
-        If not required_key_obj
-    """
+async def fetch_user(user_id: int, include_profile: bool = False) -> dict:
     ...
-
 ```
 
-### 3. CI-Ready Coverage Gating
+can become a consistently structured NumPy, Google, or reStructuredText docstring without somebody manually copying the signature into prose.
 
-You can’t drop a passive IDE extension into a GitHub Action to block a bad Pull Request. But you *can* drop a fast CLI tool.
+The tool also protects mixed-style codebases. If an existing docstring uses a different convention, it detects that style and refuses to silently rewrite it. An intentional migration is still possible:
 
-The latest version introduces native pipeline flags:
+```shell
+gendocs_new src/ --style google --overwrite-style true
+```
 
-* `--check`: Generates a total project docstring coverage report without touching the code.
-* `--strict`: Rejects partial or incomplete docstrings.
-* `--threshold 90`: Automatically fails the CI build if docstring coverage falls below your team's threshold.
-
-It integrates seamlessly with `pyproject.toml`, allowing you to define these rules natively alongside your existing linting and testing stacks.
+That makes style conversion an explicit decision rather than a surprising side effect.
 
 ---
 
-## Keeping It Automatic and Out of Sight
+## Why Not Ask an LLM to Do All of This?
 
-By dropping `docstring_generator` into a local `pre-commit` hook, you guarantee that documentation never drifts from the live type signatures—completely out of sight, running locally in milliseconds.
+LLMs and deterministic tools solve different parts of the documentation problem.
+
+### The token and latency tax
+
+Sending a large repository to a model on every commit just to verify that signatures and docstrings agree is slow and unnecessarily expensive. Parsing code locally is a much better fit for repetitive structural work.
+
+### Probabilistic output
+
+An LLM may infer that a function can fail. A static analyzer can inspect its `raise` statements. For API contracts, that distinction matters.
+
+### Loss of domain context
+
+Regenerating a complete docstring can erase the explanation that only a person familiar with the business domain could write. Structural synchronization should not require throwing away useful prose.
+
+### Governance and code privacy
+
+Sending source code to an external model may be restricted—or prohibited entirely—for repositories that contain proprietary logic, security-sensitive code, or regulated data. Even when an AI provider offers suitable privacy controls, teams still need to decide which code may leave their environment, how prompts and outputs are retained, and who is accountable for reviewing generated documentation.
+
+`docstring_generator` performs its analysis locally and does not need to send source code to a model. Its output follows explicit rules that can be versioned in `pyproject.toml`, reviewed in a diff, and enforced consistently in CI. That makes the documentation process easier to audit and gives security and compliance teams a clear answer to what ran, where it ran, and which policy it applied.
+
+The productive division of labor is straightforward: let AI or a developer explain *why* a parameter exists, and let deterministic tooling maintain names, types, return sections, formatting, and detectable exceptions.
+
+---
+
+## Preserve the Explanations That Matter
+
+Before generation, `$1`, `$2`, and subsequent markers associate descriptions with positional parameters. A `>>` marker does the same for the return value:
+
+```python
+def calculate_total(items: list[float], tax_rate: float) -> float:
+    """Calculate the final invoice amount.
+
+    $1 Prices before tax.
+    $2 Tax expressed as a decimal, for example 0.19.
+    >> The invoice total including tax.
+    """
+    return sum(items) * (1 + tax_rate)
+```
+
+With Google style selected, the result is structured without losing those descriptions:
+
+```python
+def calculate_total(items: list[float], tax_rate: float) -> float:
+    """Calculate the final invoice amount.
+
+    Args:
+        items (list[float]): Prices before tax.
+        tax_rate (float): Tax expressed as a decimal, for example 0.19.
+    Returns:
+        float: The invoice total including tax.
+    """
+    return sum(items) * (1 + tax_rate)
+```
+
+This is where AI fits well: use it to draft meaningful descriptions, then use the generator to place them into a predictable format and keep the surrounding structure consistent.
+
+---
+
+## Make Failure Modes Part of the Contract
+
+The extension analyzes function bodies for explicit `raise` statements and adds them to a `Raises` section. That is particularly useful in validators and API code:
+
+```python
+@field_validator("api_config", mode="before")
+@classmethod
+def validate_api_config(cls, values: dict) -> dict:
+    required_keys = values.get("required_keys")
+    if not required_keys:
+        raise ValueError("required_keys must be provided")
+    if not isinstance(required_keys, dict):
+        raise TypeError("required_keys must be a dictionary")
+    return values
+```
+
+The generated documentation records both `ValueError` and `TypeError` instead of relying on somebody to notice and transcribe them. It is static analysis rather than a guess, and multiple raises in the same function are supported.
+
+As with any static analysis, this describes what is visible in the function body; it is not a promise to discover every exception that could emerge from arbitrary code called further down the stack.
+
+---
+
+## Safe Enough for an Existing Codebase
+
+Running a generator across a mature repository should be reviewable. Dry-run mode shows a unified diff without changing files:
+
+```shell
+gendocs_new src/ --dry-run
+```
+
+For a large Git repository, changed-only mode limits work to modified and staged Python files:
+
+```shell
+gendocs_new src/ --changed-only --dry-run
+```
+
+Projects can also exclude generated or internal code and skip magic methods:
+
+```shell
+gendocs_new src/ \
+  --exclude-dir migrations \
+  --exclude-dir tests \
+  --exclude-file settings.py \
+  --ignore-magic
+```
+
+Defaults belong in `pyproject.toml`, not in a command copied between developers:
+
+```toml
+[tool.docstring_generator]
+strict = true
+threshold = 90
+exclude_files = ["settings.py"]
+exclude_dirs = ["tests", "migrations"]
+ignore_magic = true
+```
+
+Command-line options override project configuration when a one-off run needs different behavior.
+
+---
+
+## Coverage Checks for CI
+
+Generation fixes documentation locally; coverage auditing makes the standard enforceable for a team. Check mode scans without modifying source files:
+
+```shell
+gendocs_new src/ --check
+```
+
+Add `--strict` to treat incomplete or outdated docstrings as undocumented, and use a threshold to fail the command when coverage is too low:
+
+```shell
+gendocs_new src/ --check --strict --threshold 90
+```
+
+That command can run in a CI pipeline alongside tests and linting. A pull request that adds an undocumented function can then fail for a clear, reproducible reason rather than depending on reviewer memory.
+
+For local enforcement, the repository also provides a pre-commit hook:
 
 ```yaml
-# .pre-commit-config.yaml
 repos:
   - repo: https://github.com/FelixTheC/docstring_generator
-    rev: v1.0.2
+    rev: <release-tag>
     hooks:
       - id: gendocs
         args: [src/, --style, google]
-
 ```
 
-Let AI write your initial thoughts and draft your code. But let a fast, deterministic engine ensure your codebase stays strictly compliant, unified, and accurate across every single commit.
-
-👉 **GitHub Repo:** [https://github.com/FelixTheC/docstring_generator](https://github.com/FelixTheC/docstring_generator)
-👉 **PyPI:** [https://pypi.org/project/docstring-generator/](https://pypi.org/project/docstring-generator/)
+If the hook updates a file, the commit stops so the developer can review and stage the generated changes. The next run passes once the working tree is up to date.
 
 ---
 
-**Tags to use on Medium:** `Python` | `Clean Code` | `Software Development` | `Artificial Intelligence` | `Open Source`
+## Why a C++ Backbone?
+
+Documentation maintenance is most useful when it is cheap enough to run repeatedly. A slow pre-commit hook eventually gets bypassed.
+
+The generation engine lives in [`docstring_generator_ext`](https://github.com/FelixTheC/docstring_generator_ext), a C++20 extension exposed to Python through pybind11. Python's `ast` module provides the signature, annotation, and function-body information; the extension turns that information into formatted docstrings and injects them into the source file.
+
+```text
+Python files or directories
+          |
+          v
+  gendocs_new CLI
+          |
+          v
+docstring_generator_ext
+   (C++20 + pybind11)
+          |
+          +---- NumPy
+          +---- Google
+          +---- reStructuredText
+```
+
+The extension can also be used directly from Python through `parse_file()` and exposes a read-only `check_docstring()` coverage API. Most users, however, can stay with the CLI and `pyproject.toml` configuration.
+
+Pre-built wheels mean users do not need a local C++ toolchain for a normal installation. Building the extension from source requires Python 3.13 or newer and a C++20-capable compiler.
+
+---
+
+## AI Plus Deterministic Tooling
+
+AI assistants are excellent at producing a first draft and explaining domain intent. They are not persistent guardians of a changing codebase.
+
+`docstring_generator` handles the repeatable part: generating docstrings from type hints, supporting sync and async code, preserving descriptions, extracting explicit exceptions, enforcing a chosen style, previewing changes, and measuring coverage in CI.
+
+Let AI help write the explanation. Let a fast, deterministic tool keep the documentation aligned with the code on every commit.
+
+- **GitHub:** [github.com/FelixTheC/docstring_generator](https://github.com/FelixTheC/docstring_generator)
+- **PyPI:** [pypi.org/project/docstring-generator](https://pypi.org/project/docstring-generator/)
+- **C++ extension:** [github.com/FelixTheC/docstring_generator_ext](https://github.com/FelixTheC/docstring_generator_ext)
+
+---
+
+**Suggested Medium tags:** `Python` · `Clean Code` · `Software Development` · `Artificial Intelligence` · `Open Source`
